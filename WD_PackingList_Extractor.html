@@ -1,7 +1,7 @@
 <!DOCTYPE html>
-<!-- saved from url=(0076)file:///C:/Users/waranya.suwannang/Downloads/WD_PackingList_Extractor_6.html -->
-<html lang="th"><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
-
+<html lang="th">
+<head>
+<meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>WD Packing List Extractor</title>
 <style>
@@ -56,20 +56,20 @@
 <body>
 <div class="container">
   <h1>📦 WD Packing List Extractor</h1>
-  <p class="subtitle">อัปโหลด PDF หลายไฟล์พร้อมกัน แล้ว export ข้อมูล Shipment &amp; Pallet ID เป็น Excel (.csv)</p>
+  <p class="subtitle">อัปโหลด PDF หลายไฟล์พร้อมกัน แล้ว export ข้อมูล Shipment & Pallet ID เป็น Excel (.csv)</p>
 
-  <div id="drop-zone" onclick="document.getElementById(&#39;file-input&#39;).click()">
+  <div id="drop-zone" onclick="document.getElementById('file-input').click()">
     <div class="icon">📄</div>
     <p>คลิกหรือลาก PDF มาวางที่นี่</p>
     <small>รองรับหลายไฟล์พร้อมกัน (.pdf)</small>
   </div>
-  <input type="file" id="file-input" accept=".pdf" multiple="">
+  <input type="file" id="file-input" accept=".pdf" multiple>
 
   <div id="file-list" style="margin-bottom: 1rem;"></div>
 
   <div class="btn-row">
-    <button class="primary" id="extract-btn" disabled="" onclick="extractAll()">▶ ดึงข้อมูล</button>
-    <button class="export" id="export-btn" disabled="" onclick="exportCSV()">⬇ Export Excel (.csv)</button>
+    <button class="primary" id="extract-btn" disabled onclick="extractAll()">▶ ดึงข้อมูล</button>
+    <button class="export" id="export-btn" disabled onclick="exportCSV()">⬇ Export Excel (.csv)</button>
     <button onclick="clearAll()">ล้างทั้งหมด</button>
   </div>
   <div id="status"></div>
@@ -91,7 +91,7 @@
   </div>
 </div>
 
-<script src="./WD Packing List Extractor_files/pdf.min.js.download"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script>
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
@@ -169,10 +169,10 @@ function parseData(items, filename) {
 
   // หา header คอลัมน์ "Marks & Pallet ID"
   let colX = null, colY = null;
-  for (let i = 0; i < items.length; i++) {
-    if (items[i].str.includes('Marks') || items[i].str.includes('Package ID')) {
-      colX = items[i].x;
-      colY = items[i].y;
+  for (const item of items) {
+    if (item.str.includes('Marks') || item.str.includes('Package ID')) {
+      colX = item.x;
+      colY = item.y;
       break;
     }
   }
@@ -182,9 +182,9 @@ function parseData(items, filename) {
   }
 
   // หาขอบขวาของคอลัมน์ (คอลัมน์ Qty อยู่ถัดไป)
-  let nextColX = colX + 120;
+  let nextColX = colX + 130;
   for (const item of items) {
-    if ((item.str === 'Qty' || item.str === 'QTY') && item.y < colY + 30) {
+    if ((item.str === 'Qty' || item.str === 'QTY') && item.y < colY + 40) {
       nextColX = item.x;
       break;
     }
@@ -198,33 +198,63 @@ function parseData(items, filename) {
     }
   }
 
-  // ดึง text ใต้คอลัมน์ Marks
-  const rawIds = [];
-  for (const item of items) {
-    if (item.y <= colY + 10) continue;
-    if (item.y >= stopY) continue;
-    if (item.x < colX - 30 || item.x > nextColX - 5) continue;
-    const s = item.str;
-    if (s.length < 5) continue;
-    if (/^\d+$/.test(s)) continue;
-    if (/^QTY/i.test(s)) continue;
-    if (/^(TH|COO|Seq|Lin|Part|Order|Customer|DN|Customs|Marks|Package|Net|Weight|Line)$/i.test(s)) continue;
-    // แยกถ้ามีหลาย ID ในบรรทัดเดียว
-    const parts = s.split(/[,\s]+/).map(p => p.trim()).filter(p => p.length >= 5 && !/^\d+$/.test(p));
-    rawIds.push(...parts);
+  // ดึง text ทั้งหมดในคอลัมน์ Marks เรียงตาม y (บนลงล่าง)
+  const colItems = items
+    .filter(item => {
+      if (item.y <= colY + 10) return false;
+      if (item.y >= stopY) return false;
+      if (item.x < colX - 30 || item.x > nextColX - 5) return false;
+      // กรองออก: ตัวเลขล้วน, QTY, คำสั้นๆ ที่ไม่ใช่ ID
+      const s = item.str;
+      if (/^QTY/i.test(s)) return false;
+      if (/^\d+$/.test(s)) return false;
+      if (/^(TH|COO|Seq|Lin|Part|Order|Customer|DN|Customs|Marks|Package|Pallet|Net|Weight|Line|Count|ID)$/i.test(s)) return false;
+      if (/^(Package ID|Pallet ID|Marks & Pallet|Package ID\s*)$/i.test(s)) return false;
+      return true;
+    })
+    .sort((a, b) => a.y - b.y);
+
+  // ต่อ text ทั้งหมดเป็น string เดียว แล้วแยกด้วย comma
+  // วิธีนี้รองรับ ID ที่ถูกตัดขึ้นบรรทัดใหม่ เช่น "PY8A31902" + "P," → "PY8A31902P"
+  // โดยถ้า item ก่อนหน้าไม่ลงท้ายด้วย comma ให้ต่อตรงๆ
+  let combined = '';
+  for (let i = 0; i < colItems.length; i++) {
+    const s = colItems[i].str;
+    if (i === 0) {
+      combined = s;
+    } else {
+      // ถ้า text ก่อนหน้าลงท้ายด้วย comma หรือ space แล้ว ต่อปกติ
+      if (combined.endsWith(',') || combined.endsWith(' ')) {
+        combined += s;
+      } else {
+        // ไม่มี comma = บรรทัดถัดไปเป็นส่วนต่อของ ID เดิม ต่อตรงๆ
+        combined += s;
+      }
+    }
   }
 
-  const uniqueIds = [...new Set(rawIds)];
+  // แยกด้วย comma แล้ว trim
+  const rawIds = combined
+    .split(',')
+    .map(s => s.trim())
+    .filter(s => s.length >= 3);
+
+  // กรอง noise ที่หลุดมา และ deduplicate
+  const filtered = rawIds.filter(s => {
+    if (/^\d+$/.test(s)) return false;
+    if (/^(TH|QTY|COO)$/i.test(s)) return false;
+    if (/^(Package ID|Pallet ID|Package|Pallet|Marks|ID)$/i.test(s)) return false;
+    if (s.length < 5) return false;
+    return true;
+  });
+
+  const uniqueIds = [...new Set(filtered)];
 
   if (uniqueIds.length === 0) {
     return [{ shipment: shipmentNum, palletId: '-' }];
   }
 
-  // ทุกแถวมี Shipment Number
-  return uniqueIds.map(id => ({
-    shipment: shipmentNum,
-    palletId: id
-  }));
+  return uniqueIds.map(id => ({ shipment: shipmentNum, palletId: id }));
 }
 
 async function extractAll() {
@@ -253,7 +283,6 @@ function renderResults() {
   tbody.innerHTML = '';
   results.forEach((r, idx) => {
     const tr = document.createElement('tr');
-    // group-first เมื่อเป็นแถวแรกหรือ shipment เปลี่ยน
     const isFirst = idx === 0 || results[idx - 1].shipment !== r.shipment;
     tr.className = isFirst ? 'group-first' : 'group-cont';
     tr.innerHTML = `<td>${r.shipment}</td><td>${r.palletId}</td>`;
@@ -279,6 +308,5 @@ function exportCSV() {
   URL.revokeObjectURL(url);
 }
 </script>
-
-
-</body></html>
+</body>
+</html>
