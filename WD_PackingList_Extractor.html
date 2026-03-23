@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WD Packing List Extractor</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Arial, sans-serif; background: #f5f5f5; color: #222; min-height: 100vh; padding: 2rem; }
+  .container { max-width: 900px; margin: 0 auto; background: #fff; border-radius: 12px; padding: 2rem; box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
+  h1 { font-size: 20px; font-weight: 600; margin-bottom: 4px; }
+  .subtitle { font-size: 13px; color: #666; margin-bottom: 1.5rem; }
+  #drop-zone {
+    border: 2px dashed #ccc; border-radius: 10px; padding: 2.5rem;
+    text-align: center; cursor: pointer; transition: background 0.15s, border-color 0.15s;
+    background: #fafafa; margin-bottom: 1.25rem;
+  }
+  #drop-zone:hover, #drop-zone.drag-over { background: #eef4ff; border-color: #4a90d9; }
+  #drop-zone .icon { font-size: 36px; margin-bottom: 8px; }
+  #drop-zone p { font-weight: 500; margin-bottom: 4px; }
+  #drop-zone small { color: #888; font-size: 12px; }
+  #file-input { display: none; }
+  .file-tag {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: #f0f0f0; border: 1px solid #ddd;
+    border-radius: 6px; padding: 4px 10px; font-size: 12px; margin: 3px;
+  }
+  .remove-btn { cursor: pointer; color: #aaa; font-size: 14px; }
+  .remove-btn:hover { color: #e44; }
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
+  button {
+    padding: 8px 18px; border-radius: 7px; border: 1px solid #ccc;
+    cursor: pointer; font-size: 14px; font-weight: 500;
+    background: #fff; color: #333; transition: background 0.1s;
+  }
+  button:hover { background: #f5f5f5; }
+  button.primary { background: #222; color: #fff; border-color: #222; }
+  button.primary:hover { background: #444; }
+  button.export { background: #1a6e36; color: #fff; border-color: #1a6e36; }
+  button.export:hover { background: #24924a; }
+  button:disabled { opacity: 0.35; cursor: not-allowed; }
+  #status { font-size: 13px; color: #666; margin-top: 6px; min-height: 20px; }
+  #results-section { margin-top: 1.5rem; }
+  .section-label { font-size: 12px; color: #999; margin-bottom: 8px; }
+  .badge {
+    display: inline-block; background: #e6f4ea; color: #1a6e36;
+    font-size: 11px; padding: 2px 8px; border-radius: 5px; margin-left: 6px;
+  }
+  .table-wrap { overflow-x: auto; border: 1px solid #e0e0e0; border-radius: 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th {
+    text-align: left; padding: 9px 12px;
+    background: #f5f5f5; border-bottom: 1px solid #e0e0e0;
+    font-weight: 600; color: #555; white-space: nowrap;
+  }
+  td { padding: 8px 12px; border-bottom: 1px solid #f0f0f0; vertical-align: top; word-break: break-word; }
+  tr:last-child td { border-bottom: none; }
+  tr:nth-child(even) td { background: #fafafa; }
+  .note { font-size: 12px; color: #888; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>📦 WD Packing List Extractor</h1>
+  <p class="subtitle">อัปโหลด PDF หลายไฟล์พร้อมกัน แล้ว export ข้อมูล Shipment & Pallet ID เป็น Excel (.csv)</p>
+
+  <div id="drop-zone" onclick="document.getElementById('file-input').click()">
+    <div class="icon">📄</div>
+    <p>คลิกหรือลาก PDF มาวางที่นี่</p>
+    <small>รองรับหลายไฟล์พร้อมกัน (.pdf)</small>
+  </div>
+  <input type="file" id="file-input" accept=".pdf" multiple>
+
+  <div id="file-list" style="margin-bottom: 1rem;"></div>
+
+  <div class="btn-row">
+    <button class="primary" id="extract-btn" disabled onclick="extractAll()">▶ ดึงข้อมูล</button>
+    <button class="export" id="export-btn" disabled onclick="exportCSV()">⬇ Export Excel (.csv)</button>
+    <button onclick="clearAll()">ล้างทั้งหมด</button>
+  </div>
+  <div id="status"></div>
+
+  <div id="results-section" style="display:none;">
+    <p class="section-label">ผลลัพธ์ <span id="row-count" class="badge"></span></p>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>ไฟล์</th>
+            <th>Shipment Number / Shipping Mark</th>
+            <th>Marks &amp; Pallet ID / Package ID</th>
+            <th>Qty</th>
+          </tr>
+        </thead>
+        <tbody id="results-body"></tbody>
+      </table>
+    </div>
+    <p class="note">* ไฟล์ .csv เปิดได้ใน Microsoft Excel ได้เลย</p>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+let files = [];
+let results = [];
+
+const dropZone = document.getElementById('drop-zone');
+const fileInput = document.getElementById('file-input');
+const fileList = document.getElementById('file-list');
+const extractBtn = document.getElementById('extract-btn');
+const exportBtn = document.getElementById('export-btn');
+const status = document.getElementById('status');
+
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+dropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropZone.classList.remove('drag-over');
+  addFiles([...e.dataTransfer.files].filter(f => f.type === 'application/pdf'));
+});
+fileInput.addEventListener('change', e => { addFiles([...e.target.files]); fileInput.value = ''; });
+
+function addFiles(newFiles) {
+  newFiles.forEach(f => { if (!files.find(x => x.name === f.name)) files.push(f); });
+  renderFileList();
+}
+
+function renderFileList() {
+  fileList.innerHTML = '';
+  files.forEach((f, i) => {
+    const tag = document.createElement('span');
+    tag.className = 'file-tag';
+    tag.innerHTML = `📄 ${f.name} <span class="remove-btn" onclick="removeFile(${i})">✕</span>`;
+    fileList.appendChild(tag);
+  });
+  extractBtn.disabled = files.length === 0;
+  if (files.length === 0) {
+    document.getElementById('results-section').style.display = 'none';
+    exportBtn.disabled = true;
+    results = [];
+  }
+}
+
+function removeFile(i) { files.splice(i, 1); renderFileList(); }
+
+function clearAll() {
+  files = []; results = [];
+  renderFileList();
+  status.textContent = '';
+  document.getElementById('results-section').style.display = 'none';
+  exportBtn.disabled = true;
+}
+
+async function extractTextFromPDF(file) {
+  const ab = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: ab }).promise;
+  let text = '';
+  for (let p = 1; p <= pdf.numPages; p++) {
+    const page = await pdf.getPage(p);
+    const content = await page.getTextContent();
+    text += content.items.map(i => i.str).join(' ') + '\n';
+  }
+  return text;
+}
+
+function parseData(text, filename) {
+  const rows = [];
+  const shipmentMatch = text.match(/(\d{8}-\d{5})/);
+  const shipmentNum = shipmentMatch ? shipmentMatch[1] : '-';
+
+  const markPattern = /((?:PDS1G\w+|P\w{12,})(?:[,\s]+(?:PDS1G\w+|P\w{12,}))*)[^Q]*QTY:\s*(\d+)/g;
+  let m;
+  while ((m = markPattern.exec(text)) !== null) {
+    const ids = m[1].replace(/\s+/g, ' ').trim().replace(/,\s*$/, '');
+    const qty = m[2];
+    rows.push({ file: filename, shipment: shipmentNum, palletId: ids, qty });
+  }
+
+  if (rows.length === 0) {
+    const palletIds = [...text.matchAll(/(?:PDS1G\w+|P\w{12,})/g)].map(x => x[0]);
+    const qtys = [...text.matchAll(/QTY:\s*(\d+)/g)].map(x => x[1]);
+    if (palletIds.length > 0) {
+      palletIds.forEach((pid, idx) => rows.push({ file: filename, shipment: shipmentNum, palletId: pid, qty: qtys[idx] || '-' }));
+    } else {
+      rows.push({ file: filename, shipment: shipmentNum, palletId: '-', qty: '-' });
+    }
+  }
+  return rows;
+}
+
+async function extractAll() {
+  results = [];
+  status.textContent = 'กำลังดึงข้อมูล...';
+  extractBtn.disabled = true;
+  document.getElementById('results-section').style.display = 'none';
+
+  for (let i = 0; i < files.length; i++) {
+    status.textContent = `กำลังอ่านไฟล์ ${i + 1}/${files.length}: ${files[i].name}`;
+    try {
+      const text = await extractTextFromPDF(files[i]);
+      results.push(...parseData(text, files[i].name));
+    } catch(e) {
+      results.push({ file: files[i].name, shipment: 'Error', palletId: e.message, qty: '-' });
+    }
+  }
+
+  const tbody = document.getElementById('results-body');
+  tbody.innerHTML = '';
+  results.forEach(r => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${r.file}</td><td>${r.shipment}</td><td>${r.palletId}</td><td>${r.qty}</td>`;
+    tbody.appendChild(tr);
+  });
+  document.getElementById('row-count').textContent = `${results.length} รายการ`;
+  document.getElementById('results-section').style.display = 'block';
+  exportBtn.disabled = results.length === 0;
+  extractBtn.disabled = false;
+  status.textContent = `เสร็จสิ้น — พบข้อมูล ${results.length} แถว`;
+}
+
+function exportCSV() {
+  const header = ['File', 'Shipment Number / Shipping Mark', 'Marks & Pallet ID / Package ID', 'Qty'];
+  const rows = results.map(r => [r.file, r.shipment, r.palletId, r.qty]);
+  const csv = [header, ...rows].map(row =>
+    row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')
+  ).join('\n');
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `packing_list_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+</script>
+</body>
+</html>
