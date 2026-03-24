@@ -166,11 +166,21 @@ async function extractItemsFromPDF(file) {
   return allItems;
 }
 
-function parseData(items, filename) {
-  const fullText = items.map(i => i.str).join(' ');
-  const shipmentMatch = fullText.match(/(\d{8}-\d{5})/);
-  const shipmentNum = shipmentMatch ? shipmentMatch[1] : '-';
+function isNoiseStr(s) {
+  if (/^QTY/i.test(s)) return true;
+  if (/^\d+$/.test(s)) return true;
+  if (/^(TH|COO|Seq|Lin|Part|Order|Customer|DN|Customs|Marks|Package|Pallet|Net|Weight|Line|Count|ID)$/i.test(s)) return true;
+  if (/^(Package ID|Pallet ID|Marks & Pallet|Package ID\s*)$/i.test(s)) return true;
+  if (/^Page\s+\d+\s+of\s+\d+/i.test(s)) return true;
+  if (/Org\s*ID|LTHLC|LTTHC/i.test(s)) return true;
+  if (/^Marks\s*&\s*Pallet/i.test(s)) return true;
+  if (/Delivery Order|Packing List|Invoice Number|Invoice Date|Scheduled Ship/i.test(s)) return true;
+  if (/Print date|UTC Date/i.test(s)) return true;
+  if (/Page\s*\d|Org\s*ID|Marks\s*&|Pallet\s*ID\s*\//i.test(s)) return true;
+  return false;
+}
 
+function parseSingleShipment(items, shipmentNum) {
   // หา header คอลัมน์ "Marks & Pallet ID"
   let colX = null, colY = null;
   for (const item of items) {
@@ -180,12 +190,9 @@ function parseData(items, filename) {
       break;
     }
   }
+  if (colX === null) return [{ shipment: shipmentNum, palletId: '-' }];
 
-  if (colX === null) {
-    return [{ shipment: shipmentNum, palletId: '-' }];
-  }
-
-  // หาขอบขวาของคอลัมน์ (คอลัมน์ Qty อยู่ถัดไป)
+  // หาขอบขวาของคอลัมน์
   let nextColX = colX + 130;
   for (const item of items) {
     if ((item.str === 'Qty' || item.str === 'QTY') && item.y < colY + 40) {
@@ -194,7 +201,7 @@ function parseData(items, filename) {
     }
   }
 
-  // หาจุดหยุด
+  // หาจุดหยุด (Total Value หรือ NOTE)
   let stopY = Infinity;
   for (const item of items) {
     if ((item.str.includes('Total Value') || item.str === 'NOTE:' || item.str === 'NOTE') && item.y > colY) {
@@ -202,56 +209,21 @@ function parseData(items, filename) {
     }
   }
 
-  // ดึง text ทั้งหมดในคอลัมน์ Marks เรียงตาม y (บนลงล่าง)
   const colItems = items
     .filter(item => {
       if (item.y <= colY + 10) return false;
       if (item.y >= stopY) return false;
       if (item.x < colX - 30 || item.x > nextColX - 5) return false;
-      // กรองออก: ตัวเลขล้วน, QTY, คำสั้นๆ ที่ไม่ใช่ ID
-      const s = item.str;
-      if (/^QTY/i.test(s)) return false;
-      if (/^\d+$/.test(s)) return false;
-      if (/^(TH|COO|Seq|Lin|Part|Order|Customer|DN|Customs|Marks|Package|Pallet|Net|Weight|Line|Count|ID)$/i.test(s)) return false;
-      if (/^(Package ID|Pallet ID|Marks & Pallet|Package ID\s*)$/i.test(s)) return false;
-      // กรอง header/footer ที่หลุดมาจากหน้าถัดไป
-      if (/^Page\s+\d+\s+of\s+\d+/i.test(s)) return false;
-      if (/Org\s*ID|LTHLC|LTTHC/i.test(s)) return false;
-      if (/^Marks\s*&\s*Pallet/i.test(s)) return false;
-      if (/Delivery Order|Packing List|Invoice Number|Invoice Date|Scheduled Ship/i.test(s)) return false;
-      if (/Print date|UTC Date/i.test(s)) return false;
-      // กรอง string ที่มีคำ header ปนอยู่ เช่น "Page 2 of 6Org IDLTHLC1/FGIMarks & Pallet ID /MDPDS..."
-      if (/Page\s*\d|Org\s*ID|Marks\s*&|Pallet\s*ID\s*\//i.test(s)) return false;
-      return true;
+      return !isNoiseStr(item.str);
     })
     .sort((a, b) => a.y - b.y);
 
-  // ต่อ text ทั้งหมดเป็น string เดียว แล้วแยกด้วย comma
-  // วิธีนี้รองรับ ID ที่ถูกตัดขึ้นบรรทัดใหม่ เช่น "PY8A31902" + "P," → "PY8A31902P"
-  // โดยถ้า item ก่อนหน้าไม่ลงท้ายด้วย comma ให้ต่อตรงๆ
   let combined = '';
   for (let i = 0; i < colItems.length; i++) {
-    const s = colItems[i].str;
-    if (i === 0) {
-      combined = s;
-    } else {
-      // ถ้า text ก่อนหน้าลงท้ายด้วย comma หรือ space แล้ว ต่อปกติ
-      if (combined.endsWith(',') || combined.endsWith(' ')) {
-        combined += s;
-      } else {
-        // ไม่มี comma = บรรทัดถัดไปเป็นส่วนต่อของ ID เดิม ต่อตรงๆ
-        combined += s;
-      }
-    }
+    combined += (i === 0) ? colItems[i].str : colItems[i].str;
   }
 
-  // แยกด้วย comma แล้ว trim
-  const rawIds = combined
-    .split(',')
-    .map(s => s.trim())
-    .filter(s => s.length >= 3);
-
-  // กรอง noise ที่หลุดมา และ deduplicate
+  const rawIds = combined.split(',').map(s => s.trim()).filter(s => s.length >= 3);
   const filtered = rawIds.filter(s => {
     if (/^\d+$/.test(s)) return false;
     if (/^(TH|QTY|COO)$/i.test(s)) return false;
@@ -261,12 +233,51 @@ function parseData(items, filename) {
   });
 
   const uniqueIds = [...new Set(filtered)];
+  if (uniqueIds.length === 0) return [{ shipment: shipmentNum, palletId: '-' }];
+  return uniqueIds.map(id => ({ shipment: shipmentNum, palletId: id }));
+}
 
-  if (uniqueIds.length === 0) {
-    return [{ shipment: shipmentNum, palletId: '-' }];
+function parseData(items, filename) {
+  // หา shipment numbers ทั้งหมดพร้อม y-position ของมัน
+  const shipmentPattern = /^\d{8}-\d{5}$/;
+  const shipmentAnchors = [];
+
+  for (const item of items) {
+    if (shipmentPattern.test(item.str.trim())) {
+      // ตรวจว่าไม่ซ้ำกับที่มีอยู่แล้ว (shipment เดิมอาจปรากฏหลายครั้งในหน้าต่างๆ)
+      if (!shipmentAnchors.find(a => a.num === item.str.trim())) {
+        shipmentAnchors.push({ num: item.str.trim(), y: item.y });
+      }
+    }
   }
 
-  return uniqueIds.map(id => ({ shipment: shipmentNum, palletId: id }));
+  // ถ้าไม่เจอ shipment number เลย ลองหาด้วย regex แบบเดิม
+  if (shipmentAnchors.length === 0) {
+    const fullText = items.map(i => i.str).join(' ');
+    const m = fullText.match(/(\d{8}-\d{5})/);
+    const shipmentNum = m ? m[1] : '-';
+    return parseSingleShipment(items, shipmentNum);
+  }
+
+  // ถ้ามี shipment เดียว
+  if (shipmentAnchors.length === 1) {
+    return parseSingleShipment(items, shipmentAnchors[0].num);
+  }
+
+  // ถ้ามีหลาย shipment → แบ่ง items ตาม y-range ของแต่ละ shipment
+  // sort by y
+  shipmentAnchors.sort((a, b) => a.y - b.y);
+  const allResults = [];
+
+  for (let i = 0; i < shipmentAnchors.length; i++) {
+    const startY = shipmentAnchors[i].y;
+    const endY = i + 1 < shipmentAnchors.length ? shipmentAnchors[i + 1].y : Infinity;
+    // เผื่อ buffer ด้านบนเล็กน้อยเพื่อจับ header row ของ shipment นี้
+    const segment = items.filter(item => item.y >= startY - 50 && item.y < endY);
+    allResults.push(...parseSingleShipment(segment, shipmentAnchors[i].num));
+  }
+
+  return allResults;
 }
 
 async function extractAll() {
