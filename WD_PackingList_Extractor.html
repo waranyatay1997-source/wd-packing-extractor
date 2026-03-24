@@ -51,6 +51,36 @@
   tr.group-first td { border-top: 2px solid #ddd; }
   tr.group-first:first-child td { border-top: none; }
   .note { font-size: 12px; color: #888; margin-top: 8px; }
+  /* Modal */
+  .modal-overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,0.35); z-index: 100;
+    align-items: center; justify-content: center;
+  }
+  .modal-overlay.open { display: flex; }
+  .modal-box {
+    background: #fff; border-radius: 12px; padding: 1.5rem 2rem;
+    width: 420px; max-width: 95vw; box-shadow: 0 8px 32px rgba(0,0,0,0.18);
+  }
+  .modal-box h2 { font-size: 15px; font-weight: 600; margin-bottom: 1rem; }
+  .filename-row {
+    display: flex; align-items: center; gap: 0;
+    border: 1px solid #ccc; border-radius: 7px; overflow: hidden;
+    font-size: 13px; margin-bottom: 1rem;
+  }
+  .filename-prefix {
+    background: #f0f0f0; padding: 8px 10px;
+    color: #555; white-space: nowrap; border-right: 1px solid #ccc;
+  }
+  .filename-suffix {
+    flex: 1; padding: 8px 10px; border: none; outline: none;
+    font-size: 13px; font-family: inherit;
+  }
+  .filename-ext {
+    background: #f0f0f0; padding: 8px 10px;
+    color: #888; white-space: nowrap; border-left: 1px solid #ccc;
+  }
+  .modal-btns { display: flex; gap: 8px; justify-content: flex-end; }
 </style>
 </head>
 <body>
@@ -69,7 +99,7 @@
 
   <div class="btn-row">
     <button class="primary" id="extract-btn" disabled onclick="extractAll()">▶ ดึงข้อมูล</button>
-    <button class="export" id="export-btn" disabled onclick="exportCSV()">⬇ Export Excel (.csv)</button>
+    <button class="export" id="export-btn" disabled onclick="openExportModal()">⬇ Export Excel (.xlsx)</button>
     <button onclick="clearAll()">ล้างทั้งหมด</button>
   </div>
   <div id="status"></div>
@@ -87,11 +117,28 @@
         <tbody id="results-body"></tbody>
       </table>
     </div>
-    <p class="note">* ไฟล์ .csv เปิดได้ใน Microsoft Excel ได้เลย</p>
+    <p class="note">* ไฟล์ .xlsx เปิดได้ใน Microsoft Excel ได้เลย</p>
+  </div>
+</div>
+
+<!-- Export filename modal -->
+<div class="modal-overlay" id="export-modal">
+  <div class="modal-box">
+    <h2>💾 ตั้งชื่อไฟล์ก่อน Export</h2>
+    <div class="filename-row">
+      <span class="filename-prefix" id="filename-prefix"></span>
+      <input class="filename-suffix" id="filename-suffix" type="text" placeholder="กรอกส่วนท้าย..." />
+      <span class="filename-ext">.xlsx</span>
+    </div>
+    <div class="modal-btns">
+      <button onclick="closeModal()">ยกเลิก</button>
+      <button class="export" onclick="confirmExport()">⬇ Export</button>
+    </div>
   </div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script>
 pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
@@ -238,42 +285,48 @@ function parseSingleShipment(items, shipmentNum) {
 }
 
 function parseData(items, filename) {
-  // หา shipment numbers ทั้งหมดพร้อม y-position ของมัน
   const shipmentPattern = /^\d{8}-\d{5}$/;
-  const shipmentAnchors = [];
 
-  for (const item of items) {
-    if (shipmentPattern.test(item.str.trim())) {
-      // ตรวจว่าไม่ซ้ำกับที่มีอยู่แล้ว (shipment เดิมอาจปรากฏหลายครั้งในหน้าต่างๆ)
-      if (!shipmentAnchors.find(a => a.num === item.str.trim())) {
-        shipmentAnchors.push({ num: item.str.trim(), y: item.y });
-      }
+  // รวบรวม items ทั้งหมดที่เป็น shipment number pattern
+  const allShipmentItems = items.filter(it => shipmentPattern.test(it.str.trim()));
+
+  // ใช้ y ที่น้อยที่สุดของแต่ละ unique shipment number (= หน้าแรกที่ปรากฏ = หน้าที่มีตาราง)
+  // หน้า barcode และหน้าอื่นๆ ที่ซ้ำจะมี y มากกว่าเสมอ
+  const seenNums = new Map();
+  for (const it of allShipmentItems) {
+    const num = it.str.trim();
+    if (!seenNums.has(num) || it.y < seenNums.get(num)) {
+      seenNums.set(num, it.y);
     }
   }
 
-  // ถ้าไม่เจอ shipment number เลย ลองหาด้วย regex แบบเดิม
+  const shipmentAnchors = [];
+  for (const [num, y] of seenNums.entries()) {
+    shipmentAnchors.push({ num, y });
+  }
+  shipmentAnchors.sort((a, b) => a.y - b.y);
+
+  // ถ้าไม่เจอเลย
   if (shipmentAnchors.length === 0) {
     const fullText = items.map(i => i.str).join(' ');
     const m = fullText.match(/(\d{8}-\d{5})/);
-    const shipmentNum = m ? m[1] : '-';
-    return parseSingleShipment(items, shipmentNum);
+    return parseSingleShipment(items, m ? m[1] : '-');
   }
 
-  // ถ้ามี shipment เดียว
+  // shipment เดียว
   if (shipmentAnchors.length === 1) {
     return parseSingleShipment(items, shipmentAnchors[0].num);
   }
 
-  // ถ้ามีหลาย shipment → แบ่ง items ตาม y-range ของแต่ละ shipment
-  // sort by y
-  shipmentAnchors.sort((a, b) => a.y - b.y);
+  // หลาย shipments: boundary = y ของ anchor ถัดไป - buffer
+  // เราใช้ y ที่น้อยสุดของแต่ละ shipment แล้ว จึงไม่มีปัญหา barcode page ปน
   const allResults = [];
-
   for (let i = 0; i < shipmentAnchors.length; i++) {
-    const startY = shipmentAnchors[i].y;
-    const endY = i + 1 < shipmentAnchors.length ? shipmentAnchors[i + 1].y : Infinity;
-    // เผื่อ buffer ด้านบนเล็กน้อยเพื่อจับ header row ของ shipment นี้
-    const segment = items.filter(item => item.y >= startY - 50 && item.y < endY);
+    const startY = shipmentAnchors[i].y - 200; // buffer จับ header เหนือ shipment number
+    const endY = i + 1 < shipmentAnchors.length
+      ? shipmentAnchors[i + 1].y - 200
+      : Infinity;
+    const segment = items.filter(item => item.y >= startY && item.y < endY);
     allResults.push(...parseSingleShipment(segment, shipmentAnchors[i].num));
   }
 
@@ -316,19 +369,66 @@ function renderResults() {
   exportBtn.disabled = results.length === 0;
 }
 
-function exportCSV() {
+function getDatePrefix() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}${m}${d} - T.`;
+}
+
+function openExportModal() {
+  document.getElementById('filename-prefix').textContent = getDatePrefix();
+  document.getElementById('filename-suffix').value = '';
+  document.getElementById('export-modal').classList.add('open');
+  setTimeout(() => document.getElementById('filename-suffix').focus(), 50);
+}
+
+function closeModal() {
+  document.getElementById('export-modal').classList.remove('open');
+}
+
+// กด Enter ใน input = confirm
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('filename-suffix').addEventListener('keydown', e => {
+    if (e.key === 'Enter') confirmExport();
+    if (e.key === 'Escape') closeModal();
+  });
+  // คลิก overlay ด้านนอก = ปิด
+  document.getElementById('export-modal').addEventListener('click', e => {
+    if (e.target === document.getElementById('export-modal')) closeModal();
+  });
+});
+
+function confirmExport() {
+  const prefix = document.getElementById('filename-prefix').textContent;
+  const suffix = document.getElementById('filename-suffix').value.trim();
+  const filename = prefix + suffix + '.xlsx';
+  closeModal();
+  doExport(filename);
+}
+
+function doExport(filename) {
   const header = ['Shipment Number / Shipping Mark', 'Marks & Pallet ID / Package ID'];
   const rows = results.map(r => [r.shipment, r.palletId]);
-  const csv = [header, ...rows].map(row =>
-    row.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(',')
-  ).join('\n');
-  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `packing_list_${new Date().toISOString().slice(0,10)}.csv`;
-  a.click();
-  URL.revokeObjectURL(url);
+
+  const col1Texts = [header[0], ...rows.map(r => r[0])];
+  const col2Texts = [header[1], ...rows.map(r => r[1])];
+  const col1Width = Math.max(...col1Texts.map(s => String(s).length)) + 2;
+  const col2Width = Math.max(...col2Texts.map(s => String(s).length)) + 2;
+
+  const wsData = [header, ...rows];
+  const ws = XLSX.utils.aoa_to_sheet(wsData);
+  ws['!cols'] = [{ wch: col1Width }, { wch: col2Width }];
+
+  const headerStyle = { font: { bold: true }, fill: { fgColor: { rgb: 'F5F5F5' } } };
+  ['A1', 'B1'].forEach(cell => {
+    if (ws[cell]) ws[cell].s = headerStyle;
+  });
+
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Packing List');
+  XLSX.writeFile(wb, filename);
 }
 </script>
 </body>
