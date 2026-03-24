@@ -148,17 +148,21 @@ function clearAll() {
 async function extractItemsFromPDF(file) {
   const ab = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: ab }).promise;
-  const page = await pdf.getPage(1);
-  const content = await page.getTextContent();
-  const viewport = page.getViewport({ scale: 1 });
-  const pageH = viewport.height;
   const allItems = [];
-  content.items.forEach(item => {
-    if (!item.str.trim()) return;
-    const x = item.transform[4];
-    const y = pageH - item.transform[5];
-    allItems.push({ str: item.str.trim(), x, y });
-  });
+  let yOffset = 0;
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    const page = await pdf.getPage(pageNum);
+    const content = await page.getTextContent();
+    const viewport = page.getViewport({ scale: 1 });
+    const pageH = viewport.height;
+    content.items.forEach(item => {
+      if (!item.str.trim()) return;
+      const x = item.transform[4];
+      const y = pageH - item.transform[5];
+      allItems.push({ str: item.str.trim(), x, y: y + yOffset });
+    });
+    yOffset += pageH;
+  }
   return allItems;
 }
 
@@ -210,6 +214,14 @@ function parseData(items, filename) {
       if (/^\d+$/.test(s)) return false;
       if (/^(TH|COO|Seq|Lin|Part|Order|Customer|DN|Customs|Marks|Package|Pallet|Net|Weight|Line|Count|ID)$/i.test(s)) return false;
       if (/^(Package ID|Pallet ID|Marks & Pallet|Package ID\s*)$/i.test(s)) return false;
+      // กรอง header/footer ที่หลุดมาจากหน้าถัดไป
+      if (/^Page\s+\d+\s+of\s+\d+/i.test(s)) return false;
+      if (/Org\s*ID|LTHLC|LTTHC/i.test(s)) return false;
+      if (/^Marks\s*&\s*Pallet/i.test(s)) return false;
+      if (/Delivery Order|Packing List|Invoice Number|Invoice Date|Scheduled Ship/i.test(s)) return false;
+      if (/Print date|UTC Date/i.test(s)) return false;
+      // กรอง string ที่มีคำ header ปนอยู่ เช่น "Page 2 of 6Org IDLTHLC1/FGIMarks & Pallet ID /MDPDS..."
+      if (/Page\s*\d|Org\s*ID|Marks\s*&|Pallet\s*ID\s*\//i.test(s)) return false;
       return true;
     })
     .sort((a, b) => a.y - b.y);
